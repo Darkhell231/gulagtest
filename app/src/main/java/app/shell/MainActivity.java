@@ -33,6 +33,7 @@ import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebStorage;
 import android.webkit.WebView;
@@ -54,6 +55,7 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -99,6 +101,7 @@ public class MainActivity extends Activity {
     private LinearLayout grid;
     private ProgressBar bar;
     private TextView fab;
+    private Calc calc;
 
     private Mode mode = Mode.HOME, prevMode = Mode.HOME;
     private final LinkedHashMap<String, Win> wins = new LinkedHashMap<>(); // порядок = давность
@@ -129,7 +132,12 @@ public class MainActivity extends Activity {
         stage = new FrameLayout(this);
         root.addView(stage, new LinearLayout.LayoutParams(-1, 0, 1f));
         root.addView(buildNav(), new LinearLayout.LayoutParams(-1, U.dp(this, 46)));
-        setContentView(root);
+        FrameLayout top = new FrameLayout(this);
+        top.addView(root, new FrameLayout.LayoutParams(-1, -1));
+        calc = new Calc(this, this::codeOk, this::unlockFromCalc);
+        calc.setVisibility(View.GONE);
+        top.addView(calc, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(top);
 
         buildHome();
         webHost = new FrameLayout(this);
@@ -153,12 +161,16 @@ public class MainActivity extends Activity {
 
         refreshGrid();
         setMode(Mode.HOME);
+        bg.execute(() -> Blocker.load(getApplicationContext()));
+        if (disguise()) showCalc();
     }
 
     @Override
     protected void onStart() {
         super.onStart();
-        if (leftAt > 0 && SystemClock.elapsedRealtime() - leftAt > AUTOLOCK_MS) vault.lock();
+        long away = SystemClock.elapsedRealtime() - leftAt;
+        if (leftAt > 0 && away > AUTOLOCK_MS) vault.lock();
+        if (leftAt > 0 && disguise() && away > 30000 && calc.getVisibility() != View.VISIBLE) showCalc();
     }
 
     @Override
@@ -184,12 +196,15 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (mode == Mode.RECENTS) {
+        if (calc.getVisibility() == View.VISIBLE) {
+            moveTaskToBack(true);
+        } else if (mode == Mode.RECENTS) {
             setMode(prevMode == Mode.APP && current != null ? Mode.APP : Mode.HOME);
         } else if (mode == Mode.APP) {
             if (current != null && current.web.canGoBack()) current.web.goBack();
             else goHome();
         } else {
+            if (disguise()) showCalc();
             moveTaskToBack(true);
         }
     }
@@ -532,6 +547,21 @@ public class MainActivity extends Activity {
         Client(Win w) { this.w = w; }
 
         @Override
+        public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+            if (!w.site.adblock || r.isForMainFrame()) return null;
+            String h = r.getUrl().getHost();
+            if (h != null && !store.knowsHost(h) && Blocker.blocked(h)) {
+                return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
+            }
+            return null;
+        }
+
+        @Override
+        public void onPageFinished(WebView v, String url) {
+            if (w.site.adblock) v.evaluateJavascript(Blocker.HIDE_JS, null);
+        }
+
+        @Override
         public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
             Uri u = r.getUrl();
             String sc = u.getScheme();
@@ -634,6 +664,11 @@ public class MainActivity extends Activity {
         final EditText url = field(l, "Адрес, напр. online.sberbank.ru", edit == null ? "" : edit.url, false, null);
         url.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         final EditText name = field(l, "Название (необязательно)", edit == null || edit.autoName ? "" : edit.name, false, null);
+        final CheckBox ab = new CheckBox(this);
+        ab.setText("Блокировать рекламу");
+        ab.setTextColor(WHITE);
+        ab.setChecked(edit == null || edit.adblock);
+        l.addView(ab);
         AlertDialog.Builder b = new AlertDialog.Builder(this, DIALOG)
                 .setTitle(edit == null ? "Добавить сайт" : "Изменить")
                 .setView(l)
@@ -644,11 +679,14 @@ public class MainActivity extends Activity {
                     if (edit == null) {
                         if (store.byUrl(u) != null) { toast("Такой сайт уже есть"); return; }
                         Store.Site s = store.add(nm, u);
+                        s.adblock = ab.isChecked();
+                        store.save();
                         refreshGrid();
                         fetchIcon(s);
                     } else {
                         boolean changed = !u.equals(edit.url);
                         edit.url = u;
+                        edit.adblock = ab.isChecked();
                         if (!nm.isEmpty()) { edit.name = nm; edit.autoName = false; }
                         else if (!edit.autoName) { edit.autoName = true; edit.name = Store.bare(Store.host(u)); }
                         store.save();
@@ -685,7 +723,7 @@ public class MainActivity extends Activity {
     private String sitesJson() throws Exception {
         JSONArray a = new JSONArray();
         for (Store.Site s : store.sites) {
-            JSONObject o = new JSONObject().put("name", s.autoName ? "" : s.name).put("url", s.url);
+            JSONObject o = new JSONObject().put("name", s.autoName ? "" : s.name).put("url", s.url).put("ab", s.adblock);
             byte[] ic = store.iconBytes(s);
             if (ic != null) o.put("icon", Base64.encodeToString(ic, Base64.NO_WRAP));
             a.put(o);
@@ -701,6 +739,8 @@ public class MainActivity extends Activity {
             String u = Store.normalize(x.optString("url"));
             if (u == null || store.byUrl(u) != null) continue;
             Store.Site s = store.add(x.optString("name", ""), u);
+            s.adblock = x.optBoolean("ab", true);
+            store.save();
             String ic = x.optString("icon", "");
             Bitmap bm = null;
             if (!ic.isEmpty()) {
@@ -718,30 +758,89 @@ public class MainActivity extends Activity {
 
     private void menuDialog() {
         final boolean secure = prefs.getBoolean("secure", true);
-        final String[] items = {
-                "Экспорт списка сайтов", "Импорт списка сайтов",
-                "Экспорт сейфа (зашифрованный файл)", "Импорт сейфа",
-                "Заблокировать сейф",
-                "Очистить cookies и кэш",
-                "Защита от скриншотов: " + (secure ? "включена" : "выключена")};
-        new AlertDialog.Builder(this, DIALOG).setTitle("Меню").setItems(items, (d, i) -> {
-            switch (i) {
-                case 0: pickCreate(R_EXPORT_SITES, "phoneshell-sites.json", "application/json"); break;
-                case 1: pickOpen(R_IMPORT_SITES); break;
-                case 2:
-                    if (!vault.exists()) toast("Сейф ещё не создан");
-                    else pickCreate(R_EXPORT_VAULT, "phoneshell-vault.psv", "application/octet-stream");
-                    break;
-                case 3: pickOpen(R_IMPORT_VAULT); break;
-                case 4: vault.lock(); toast("Сейф заблокирован"); break;
-                case 5: clearData(); break;
-                case 6:
-                    prefs.edit().putBoolean("secure", !secure).apply();
-                    applySecure();
-                    break;
-                default: break;
-            }
-        }).show();
+        final List<String> labels = new ArrayList<>();
+        final List<Runnable> acts = new ArrayList<>();
+        labels.add("Экспорт списка сайтов");
+        acts.add(() -> pickCreate(R_EXPORT_SITES, "phoneshell-sites.json", "application/json"));
+        labels.add("Импорт списка сайтов");
+        acts.add(() -> pickOpen(R_IMPORT_SITES));
+        labels.add("Экспорт сейфа (зашифрованный файл)");
+        acts.add(() -> {
+            if (!vault.exists()) toast("Сейф ещё не создан");
+            else pickCreate(R_EXPORT_VAULT, "phoneshell-vault.psv", "application/octet-stream");
+        });
+        labels.add("Импорт сейфа");
+        acts.add(() -> pickOpen(R_IMPORT_VAULT));
+        labels.add("Заблокировать сейф");
+        acts.add(() -> { vault.lock(); toast("Сейф заблокирован"); });
+        labels.add("Маскировка под калькулятор: " + (disguise() ? "изменить код" : "включить"));
+        acts.add(this::setCodeDialog);
+        if (disguise()) {
+            labels.add("Свернуть в калькулятор");
+            acts.add(this::showCalc);
+            labels.add("Отключить маскировку");
+            acts.add(() -> { prefs.edit().remove("ch").remove("cs").apply(); toast("Маскировка отключена"); });
+        }
+        labels.add("Очистить cookies и кэш");
+        acts.add(this::clearData);
+        labels.add("Защита от скриншотов: " + (secure ? "включена" : "выключена"));
+        acts.add(() -> { prefs.edit().putBoolean("secure", !secure).apply(); applySecure(); });
+        new AlertDialog.Builder(this, DIALOG).setTitle("Меню")
+                .setItems(labels.toArray(new String[0]), (d, i) -> acts.get(i).run()).show();
+    }
+
+    // ---------- маскировка под калькулятор ----------
+
+    private boolean disguise() {
+        return prefs.contains("ch");
+    }
+
+    private static String hashCode(String salt, String code) {
+        try {
+            return Io.hex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest((salt + code).getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private boolean codeOk(String digits) {
+        String h = prefs.getString("ch", "");
+        return !h.isEmpty() && h.equals(hashCode(prefs.getString("cs", ""), digits));
+    }
+
+    private void showCalc() {
+        if (mode == Mode.APP) snap(current);
+        setMode(Mode.HOME);
+        vault.lock();
+        calc.reset();
+        calc.setVisibility(View.VISIBLE);
+    }
+
+    private void unlockFromCalc() {
+        calc.setVisibility(View.GONE);
+    }
+
+    private void setCodeDialog() {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setPadding(U.dp(this, 20), U.dp(this, 8), U.dp(this, 20), 0);
+        l.addView(U.tv(this, "Приложение будет выглядеть как калькулятор. Чтобы войти, наберите код и нажмите «=».", 12, 0xBBFFFFFF));
+        final EditText c1 = field(l, "Код (4–12 цифр)", "", true, null);
+        final EditText c2 = field(l, "Повторите код", "", true, null);
+        c1.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        c2.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        new AlertDialog.Builder(this, DIALOG).setTitle("Код входа").setView(l)
+                .setPositiveButton("Сохранить", (d, i) -> {
+                    String a = c1.getText().toString();
+                    if (!a.matches("\\d{4,12}")) { toast("Нужно 4–12 цифр"); return; }
+                    if (!a.equals(c2.getText().toString())) { toast("Коды не совпадают"); return; }
+                    byte[] sb = new byte[8];
+                    new java.security.SecureRandom().nextBytes(sb);
+                    String salt = Io.hex(sb);
+                    prefs.edit().putString("cs", salt).putString("ch", hashCode(salt, a)).apply();
+                    toast("Готово. При следующем запуске откроется калькулятор");
+                }).setNegativeButton("Отмена", null).show();
     }
 
     private void clearData() {

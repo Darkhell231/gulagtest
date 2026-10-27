@@ -24,6 +24,7 @@ final class Store {
         String id, name, url;
         boolean autoName;   // имя взято автоматически (из <title>/хоста)
         boolean customIcon; // иконка выбрана пользователем
+        boolean adblock = true;
     }
 
     final List<Site> sites = new ArrayList<>();
@@ -46,6 +47,7 @@ final class Store {
                 s.url = o.getString("url");
                 s.autoName = o.optBoolean("auto");
                 s.customIcon = o.optBoolean("custom");
+                s.adblock = o.optBoolean("ab", true);
                 sites.add(s);
             }
         } catch (Exception ignored) {
@@ -57,7 +59,7 @@ final class Store {
             JSONArray a = new JSONArray();
             for (Site s : sites) {
                 a.put(new JSONObject().put("id", s.id).put("name", s.name).put("url", s.url)
-                        .put("auto", s.autoName).put("custom", s.customIcon));
+                        .put("auto", s.autoName).put("custom", s.customIcon).put("ab", s.adblock));
             }
             Io.writeAtomic(file, a.toString().getBytes(StandardCharsets.UTF_8));
         } catch (Exception ignored) {
