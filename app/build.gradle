@@ -1,0 +1,54 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'app.shell'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'app.shell.phone'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        release {
+            // Ключ для личной установки. Храните репозиторий приватным.
+            storeFile file('../release.jks')
+            storePassword 'phoneshell'
+            keyAlias 'shell'
+            keyPassword 'phoneshell'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            signingConfig signingConfigs.release
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+tasks.register('checkCerts') {
+    doLast {
+        if (!file('src/main/res/raw/russian_trusted_root_ca.crt').exists()) {
+            throw new GradleException('Нет сертификата. Сначала выполните: bash get_certs.sh')
+        }
+    }
+}
+tasks.matching { it.name == 'preBuild' }.configureEach { dependsOn 'checkCerts' }
