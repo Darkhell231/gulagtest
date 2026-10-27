@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Доверие действует ТОЛЬКО внутри этого приложения (WebView + HTTP-запросы приложения).
+     Системное хранилище сертификатов телефона не меняется. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/russian_trusted_root_ca" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
