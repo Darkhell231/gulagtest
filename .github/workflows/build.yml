@@ -9,6 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Распаковать PhoneShell.zip (если загружен архивом)
+        run: |
+          if [ -f PhoneShell.zip ]; then unzip -qo PhoneShell.zip; echo "ROOT=PhoneShell" >> "$GITHUB_ENV"; else echo "ROOT=." >> "$GITHUB_ENV"; fi
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -18,11 +21,14 @@ jobs:
           gradle-version: '8.9'
       - name: Скачать сертификаты
         run: bash get_certs.sh
-      - name: Списки блокировки рекламы
+        working-directory: ${{ env.ROOT }}
+      - name: Списки блокировки рекламы и jsQR
         run: bash get_lists.sh
+        working-directory: ${{ env.ROOT }}
       - name: Сборка
         run: gradle :app:assembleRelease --no-daemon
+        working-directory: ${{ env.ROOT }}
       - uses: actions/upload-artifact@v4
         with:
           name: PhoneShell-apk
-          path: app/build/outputs/apk/release/*.apk
+          path: ${{ env.ROOT }}/app/build/outputs/apk/release/*.apk
